@@ -17,22 +17,22 @@ import (
 
 var (
 	runtimeScheme = runtime.NewScheme()
-	codeFactory = serializer.NewCodecFactory(runtimeScheme)
-	deserializer = codeFactory.UniversalDeserializer()
+	codeFactory   = serializer.NewCodecFactory(runtimeScheme)
+	deserializer  = codeFactory.UniversalDeserializer()
 )
 
 type WhSvrParam struct {
-	Port int
+	Port     int
 	CertFile string
-	KeyFile string
+	KeyFile  string
 }
 
 type WebhookServer struct {
-	Server *http.Server   // http server
-	WhiteListRegistries []string  // 白名单的镜像仓库列表
+	Server              *http.Server // http server
+	WhiteListRegistries []string     // 白名单的镜像仓库列表
 }
 
-func (s *WebhookServer) Handler(writer http.ResponseWriter, request *http.Request)  {
+func (s *WebhookServer) Handler(writer http.ResponseWriter, request *http.Request) {
 	var body []byte
 	if request.Body != nil {
 		if data, err := ioutil.ReadAll(request.Body); err == nil {
@@ -60,14 +60,14 @@ func (s *WebhookServer) Handler(writer http.ResponseWriter, request *http.Reques
 		klog.Errorf("Can't decode body: %v", err)
 		admissionResponse = &admissionV1.AdmissionResponse{
 			Result: &metav1.Status{
-				Code: http.StatusInternalServerError,
+				Code:    http.StatusInternalServerError,
 				Message: err.Error(),
 			},
 		}
 	} else {
 		// 序列化成功，也就是说获取到了请求的 AdmissionReview 的数据
 		if request.URL.Path == "/mutate" {
-			// TODO
+			admissionResponse = s.mutate(&requestedAdmissionReview)
 		} else if request.URL.Path == "/validate" {
 			admissionResponse = s.validate(&requestedAdmissionReview)
 		}
@@ -106,7 +106,7 @@ func (s *WebhookServer) validate(ar *admissionV1.AdmissionReview) *admissionV1.A
 	req := ar.Request
 	var (
 		allowed = true
-		code = http.StatusOK
+		code    = http.StatusOK
 		message = ""
 	)
 
@@ -121,7 +121,7 @@ func (s *WebhookServer) validate(ar *admissionV1.AdmissionReview) *admissionV1.A
 		return &admissionV1.AdmissionResponse{
 			Allowed: allowed,
 			Result: &metav1.Status{
-				Code: int32(code),
+				Code:    int32(code),
 				Message: err.Error(),
 			},
 		}
@@ -146,8 +146,107 @@ func (s *WebhookServer) validate(ar *admissionV1.AdmissionReview) *admissionV1.A
 	return &admissionV1.AdmissionResponse{
 		Allowed: allowed,
 		Result: &metav1.Status{
-			Code: int32(code),
+			Code:    int32(code),
 			Message: message,
 		},
 	}
+}
+
+func (s *WebhookServer) mutate(ar *admissionV1.AdmissionReview) *admissionV1.AdmissionResponse {
+	req := ar.Request
+
+	var (
+		allowed = true
+		code    = http.StatusOK
+		message = ""
+	)
+
+	klog.Infof("AdmissionReview for Kind=%s, Namespace=%s Name=%s UID=%s",
+		req.Kind.Kind, req.Namespace, req.Name, req.UID)
+
+	pod := &corev1.Pod{}
+	if err := json.Unmarshal(req.Object.Raw, pod); err != nil {
+		klog.Errorf("Can't unmarshal object raw: %v", err)
+		allowed = false
+		code = http.StatusBadRequest
+		return &admissionV1.AdmissionResponse{
+			Allowed: allowed,
+			Result: &metav1.Status{
+				Code:    int32(code),
+				Message: err.Error(),
+			},
+		}
+	}
+
+	pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{
+		Name: "time-volume",
+		VolumeSource: corev1.VolumeSource{
+			HostPath: &corev1.HostPathVolumeSource{
+				Path: "/etc/localtime",
+				Type: nil,
+			},
+		},
+	})
+
+	for i := 0; i < len(pod.Spec.Containers); i++ {
+		pod.Spec.Containers[i].VolumeMounts = append(pod.Spec.Containers[i].VolumeMounts, corev1.VolumeMount{
+			Name:      "time-volume",
+			ReadOnly:  false,
+			MountPath: "/etc/localtime",
+		})
+	}
+
+	containersBytes, err := json.Marshal(&pod.Spec.Containers)
+	if err != nil {
+		klog.Errorf("Can't unmarshal object containers: %v", err)
+	}
+
+	volumesBytes, err := json.Marshal(&pod.Spec.Volumes)
+	if err != nil {
+		klog.Errorf("Can't unmarshal object volumes : %v", err)
+	}
+
+	// build json patch
+	patch := []JSONPatchEntry{
+		JSONPatchEntry{
+			OP:    "add",
+			Path:  "/metadata/labels/hello-added",
+			Value: []byte(`"OK"`),
+		},
+		JSONPatchEntry{
+			OP:    "replace",
+			Path:  "/spec/containers",
+			Value: containersBytes,
+		},
+		JSONPatchEntry{
+			OP:    "replace",
+			Path:  "/spec/volumes",
+			Value: volumesBytes,
+		},
+	}
+
+	patchBytes, err := json.Marshal(&patch)
+	if err != nil {
+		klog.Errorf("Can't unmarshal object jsonpatch : %v", err)
+	}
+
+	patchType := admissionV1.PatchTypeJSONPatch
+	admissionResponse := &admissionV1.AdmissionResponse{
+		UID:       ar.Request.UID,
+		Allowed:   true,
+		Patch:     patchBytes,
+		PatchType: &patchType,
+		Result: &metav1.Status{
+			Code:    int32(code),
+			Message: message,
+		},
+	}
+
+	return admissionResponse
+}
+
+type JSONPatchEntry struct {
+	OP    string          `json:"op"?`
+	Path  string          `json:"path"`
+	Value json.RawMessage `json:"value,omitempty"`
 }
