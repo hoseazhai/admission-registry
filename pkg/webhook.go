@@ -210,7 +210,7 @@ func (s *WebhookServer) mutate(ar *admissionV1.AdmissionReview) *admissionV1.Adm
 	patch := []JSONPatchEntry{
 		JSONPatchEntry{
 			OP:    "add",
-			Path:  "/metadata/labels/hello-added",
+			Path:  "/metadata/labels/localtime-added",
 			Value: []byte(`"OK"`),
 		},
 		JSONPatchEntry{
