@@ -47,6 +47,8 @@ func (s *WebhookServer) Handler(writer http.ResponseWriter, request *http.Reques
 
 	// 校验 content-type
 	contentType := request.Header.Get("Content-Type")
+	klog.Info(fmt.Sprintf("sending response: %v", request.URL.Path))
+	klog.Info(fmt.Sprintf("sending response: %v", request))
 	if contentType != "application/json" {
 		klog.Errorf("Content-Type is %s, but expect application/json", contentType)
 		http.Error(writer, "Content-Type invalid, expect application/json", http.StatusBadRequest)
